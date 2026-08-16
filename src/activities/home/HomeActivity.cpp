@@ -20,9 +20,15 @@
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/HttpDownloader.h"
+#include "WifiCredentialStore.h"
+#include <WiFi.h>
+
+constexpr const char* AQI_CONFIG_PATH = "/.crosspoint/aqi.json";
+constexpr const char* AQI_CACHE_PATH = "/.crosspoint/aqi_cache.json";
 
 int HomeActivity::getMenuItemCount() const {
-  int count = 4;  // File Browser, Recents, File transfer, Settings
+  int count = 5;  // File Browser, Recents, File transfer, aqi, Settings
   if (!recentBooks.empty()) {
     count += recentBooks.size();
   }
@@ -105,8 +111,132 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
     progress++;
   }
 
+  // Always record an attempt in RAM to avoid looping failures
+  lastAqiAttemptTime = millis();
+
   recentsLoaded = true;
   recentsLoading = false;
+}
+
+
+void HomeActivity::loadAqiCache() {
+  if (Storage.exists(AQI_CACHE_PATH)) {
+    HalFile file;
+    if (Storage.openFileForRead("AQI", AQI_CACHE_PATH, file)) {
+      JsonDocument doc;
+      if (!deserializeJson(doc, file)) {
+        int aqi = doc["aqi"] | -1;
+        if (aqi >= 0) {
+          char buf[32];
+          snprintf(buf, sizeof(buf), tr(STR_AQI), std::to_string(aqi).c_str());
+          aqiDisplayString = buf;
+        }
+      }
+    }
+  }
+}
+void HomeActivity::checkAndFetchAqi() {
+  if (!Storage.exists(AQI_CONFIG_PATH)) {
+    // If there is no config file, we just show "AQI: --" (default) or don't do anything
+    return;
+  }
+
+  bool shouldFetch = false;
+  unsigned long lastFetch = 0;
+  if (Storage.exists(AQI_CACHE_PATH)) {
+    HalFile file;
+    if (Storage.openFileForRead("AQI", AQI_CACHE_PATH, file)) {
+      JsonDocument doc;
+      if (!deserializeJson(doc, file)) {
+        lastFetch = doc["last_fetch_ms"] | 0;
+      }
+    }
+  }
+
+  // Fetch if it's been more than 8 hours (28800000 ms), or if we never fetched
+  if (lastFetch == 0 || (millis() - lastFetch > 8 * 60 * 60 * 1000)) {
+    shouldFetch = true;
+  }
+
+  // Always record an attempt in RAM to avoid looping failures
+  lastAqiAttemptTime = millis();
+
+  if (!shouldFetch) return;
+
+  std::string url;
+  HalFile file;
+  if (Storage.openFileForRead("AQI", AQI_CONFIG_PATH, file)) {
+    JsonDocument doc;
+    if (!deserializeJson(doc, file)) {
+      url = doc["url"] | "";
+    }
+  }
+
+  if (url.empty()) return;
+
+  const wifi_mode_t originalMode = WiFi.getMode();
+  bool connectedHere = false;
+
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.mode(WIFI_STA);
+    WiFi.persistent(false);
+
+    size_t count = WIFI_STORE.getCredentialCount();
+    for (size_t i = 0; i < count; i++) {
+      auto credOpt = WIFI_STORE.getCredentialAt(i);
+      if (!credOpt) continue;
+
+      WiFi.begin(credOpt->ssid.c_str(), credOpt->password.c_str());
+      unsigned long start = millis();
+      while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+      }
+      if (WiFi.status() == WL_CONNECTED) {
+        connectedHere = true;
+        break;
+      }
+      WiFi.disconnect();
+    }
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    bool shouldUpdateError = true;
+    std::string response;
+    if (HttpDownloader::fetchUrl(url, response)) {
+      JsonDocument doc;
+      if (!deserializeJson(doc, response)) {
+        if (doc["status"] == "ok") {
+          int aqi = doc["data"]["aqi"] | -1;
+          if (aqi >= 0) {
+            JsonDocument cacheDoc;
+            cacheDoc["aqi"] = aqi;
+            cacheDoc["time"] = doc["data"]["time"]["s"] | "";
+            cacheDoc["last_fetch_ms"] = millis();
+
+            HalFile out;
+            if (Storage.openFileForWrite("AQI", AQI_CACHE_PATH, out)) {
+              serializeJson(cacheDoc, out);
+            }
+            loadAqiCache();
+            requestUpdate();
+            shouldUpdateError = false;
+          }
+        }
+      }
+    }
+    if (shouldUpdateError) {
+      aqiDisplayString = "AQI: <error>";
+      requestUpdate();
+    }
+  } else {
+    aqiDisplayString = "AQI: <error>";
+    requestUpdate();
+  }
+
+  if (connectedHere) {
+    WiFi.disconnect(true);
+    WiFi.mode(originalMode);
+  }
 }
 
 void HomeActivity::onEnter() {
@@ -190,6 +320,9 @@ void HomeActivity::loop() {
       case HomeMenuItem::FILE_TRANSFER:
         onFileTransferOpen();
         break;
+      case HomeMenuItem::AQI:
+        onAqiOpen();
+        break;
       case HomeMenuItem::SETTINGS_MENU:
         onSettingsOpen();
         break;
@@ -197,6 +330,11 @@ void HomeActivity::loop() {
         break;
     }
   };
+
+  if (!hasAttemptedAqiThisSession && firstRenderDone && (millis() - lastAqiAttemptTime > 60000)) {
+    hasAttemptedAqiThisSession = true;
+    checkAndFetchAqi();
+  }
 
   buttonNavigator.onNext([this, menuCount] {
     selectorIndex = ButtonNavigator::nextIndex(selectorIndex, menuCount);
@@ -306,9 +444,9 @@ void HomeActivity::render(RenderLock&&) {
                           std::bind(&HomeActivity::storeCoverBuffer, this));
 
   // Build menu items dynamically
-  std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_MENU_RECENT_BOOKS), tr(STR_FILE_TRANSFER),
+  std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_MENU_RECENT_BOOKS), tr(STR_FILE_TRANSFER), tr(STR_AQI),
                                         tr(STR_SETTINGS_TITLE)};
-  std::vector<UIIcon> menuIcons = {Folder, Recent, Transfer, Settings};
+  std::vector<UIIcon> menuIcons = {Folder, Recent, Transfer, Settings, Settings};
 
   if (hasOpdsServers) {
     menuItems.insert(menuItems.begin() + 2, tr(STR_OPDS_BROWSER));
@@ -351,6 +489,8 @@ void HomeActivity::onSelectBook(const std::string& path) { activityManager.goToR
 void HomeActivity::onFileBrowserOpen() { activityManager.goToFileBrowser(); }
 
 void HomeActivity::onRecentsOpen() { activityManager.goToRecentBooks(); }
+
+void HomeActivity::onAqiOpen() { activityManager.goToAqi(); }
 
 void HomeActivity::onSettingsOpen() { activityManager.goToSettings(); }
 

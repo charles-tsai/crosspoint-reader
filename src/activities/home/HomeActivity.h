@@ -30,6 +30,10 @@ class HomeActivity final : public Activity {
   std::vector<RecentBook> recentBooks;
   const HomeMenuItem initialMenuItem;
 
+  std::string aqiDisplayString = "AQI: --";
+  unsigned long lastAqiAttemptTime = 0; // Track in memory to avoid spamming
+  bool hasAttemptedAqiThisSession = false; // Run once per onEnter
+
   // Convert HomeMenuItem to menu index (used in onEnter)
   static int menuItemToIndex(HomeMenuItem item, bool hasOpdsUrl) {
     int i = 0;
@@ -40,6 +44,8 @@ class HomeActivity final : public Activity {
     if (item == HomeMenuItem::OPDS_BROWSER) return hasOpdsUrl ? i : 0;
     if (hasOpdsUrl) ++i;
     if (item == HomeMenuItem::FILE_TRANSFER) return i;
+    ++i;
+    if (item == HomeMenuItem::AQI) return i;
     ++i;
     if (item == HomeMenuItem::SETTINGS_MENU) return i;
     return 0;
@@ -52,6 +58,7 @@ class HomeActivity final : public Activity {
     if (idx == i++) return HomeMenuItem::RECENTS;
     if (hasOpdsUrl && idx == i++) return HomeMenuItem::OPDS_BROWSER;
     if (idx == i++) return HomeMenuItem::FILE_TRANSFER;
+    if (idx == i++) return HomeMenuItem::AQI;
     if (idx == i) return HomeMenuItem::SETTINGS_MENU;
     return HomeMenuItem::NONE;
   }
@@ -61,6 +68,9 @@ class HomeActivity final : public Activity {
   void onSettingsOpen();
   void onFileTransferOpen();
   void onOpdsBrowserOpen();
+  void onAqiOpen();
+  void checkAndFetchAqi();
+  void loadAqiCache();
 
   int getMenuItemCount() const;
   bool storeCoverBuffer();    // Store frame buffer for cover image
