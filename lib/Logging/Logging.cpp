@@ -1,12 +1,37 @@
 #include "Logging.h"
 
 #include <BoardConfig.h>
+#include <HalStorage.h>
 #include <esp_rom_sys.h>
 
 #include <string>
 
 #define MAX_ENTRY_LEN 256
 #define MAX_LOG_LINES 16
+
+static char sdLogBuffer[SD_LOG_BATCH_SIZE];
+static size_t sdLogLen = 0;
+static unsigned long lastLogWriteMs = 0;
+
+void flushLogsToSd() {
+  if (sdLogLen == 0 || !Storage.ready()) {
+    return;
+  }
+
+  HalFile file;
+  if (Storage.openFileForAppend("LOG", "/log.txt", file)) {
+    file.write(reinterpret_cast<const uint8_t*>(sdLogBuffer), sdLogLen);
+    file.close();
+    sdLogLen = 0;
+    lastLogWriteMs = millis();
+  }
+}
+
+void updateLogging() {
+  if (sdLogLen > 0 && Storage.ready() && (millis() - lastLogWriteMs >= 60000)) {
+    flushLogsToSd();
+  }
+}
 
 // Simple ring buffer log, useful for error reporting when we encounter a crash
 RTC_NOINIT_ATTR char logMessages[MAX_LOG_LINES][MAX_ENTRY_LEN];
@@ -73,6 +98,16 @@ void logPrintf(const char* level, const char* origin, const char* format, ...) {
   }
 #endif
   addToLogRingBuffer(buf);
+
+  size_t bufLen = strlen(buf);
+  if (sdLogLen + bufLen >= SD_LOG_BATCH_SIZE) {
+    flushLogsToSd();
+  }
+  // If flush failed (e.g. Storage not ready), drop logs to prevent buffer overflow
+  if (sdLogLen + bufLen < SD_LOG_BATCH_SIZE) {
+    memcpy(sdLogBuffer + sdLogLen, buf, bufLen);
+    sdLogLen += bufLen;
+  }
 }
 
 std::string getLastLogs() {
