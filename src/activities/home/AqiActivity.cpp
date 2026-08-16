@@ -8,8 +8,8 @@
 #include "I18n.h"
 #include <WiFi.h>
 
-constexpr const char* AQI_CONFIG_PATH = "/.crosspoint/aqi.json";
-constexpr const char* AQI_CACHE_PATH = "/.crosspoint/aqi_cache.json";
+constexpr const char* AQI_CONFIG_PATH = "/config/aqi.json";
+constexpr const char* AQI_CACHE_PATH = "/config/aqi_cache.json";
 
 AqiActivity::AqiActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
     : Activity("AqiActivity", renderer, mappedInput) {}
@@ -97,15 +97,15 @@ void AqiActivity::fetchAqi(bool manual) {
       JsonDocument doc;
       if (!deserializeJson(doc, response)) {
         if (doc["status"] == "ok") {
-          int aqi = doc["data"]["aqi"] | -1;
+          int aqi = doc[0]["aqi"] | -1;
           if (aqi >= 0) {
             aqiValue = std::to_string(aqi);
 
             // Save cache
             JsonDocument cacheDoc;
             cacheDoc["aqi"] = aqi;
-            cacheDoc["time"] = doc["data"]["time"]["s"] | "";
-            cacheDoc["last_fetch_ms"] = millis();
+            cacheDoc["time"] = doc[0]["publishtime"] | "";
+            // cacheDoc["last_fetch_ms"] = millis();
 
             HalFile out;
             if (Storage.openFileForWrite("AQI", AQI_CACHE_PATH, out)) {
