@@ -1,0 +1,42 @@
+diff --git a/libs/hardware/SDCardManager/include/SDCardManager.h b/libs/hardware/SDCardManager/include/SDCardManager.h
+index 3bada7b..3f86a4b 100644
+--- a/libs/hardware/SDCardManager/include/SDCardManager.h
++++ b/libs/hardware/SDCardManager/include/SDCardManager.h
+@@ -66,6 +66,9 @@ class SDCardManager {
+   bool openFileForWrite(const char* moduleName, const char* path, FsFile& file);
+   bool openFileForWrite(const char* moduleName, const std::string& path, FsFile& file);
+   bool openFileForWrite(const char* moduleName, const String& path, FsFile& file);
++  bool openFileForAppend(const char* moduleName, const char* path, FsFile& file);
++  bool openFileForAppend(const char* moduleName, const std::string& path, FsFile& file);
++  bool openFileForAppend(const char* moduleName, const String& path, FsFile& file);
+   bool removeDir(const char* path);
+
+   // Optional board hook to bring up SD-card power before the card is mounted, for
+diff --git a/libs/hardware/SDCardManager/src/SDCardManager.cpp b/libs/hardware/SDCardManager/src/SDCardManager.cpp
+index 114f5dc..1f77768 100644
+--- a/libs/hardware/SDCardManager/src/SDCardManager.cpp
++++ b/libs/hardware/SDCardManager/src/SDCardManager.cpp
+@@ -331,6 +331,23 @@ bool SDCardManager::openFileForWrite(const char* moduleName, const String& path,
+   return openFileForWrite(moduleName, path.c_str(), file);
+ }
+
++bool SDCardManager::openFileForAppend(const char* moduleName, const char* path, FsFile& file) {
++  file = vol().open(path, O_WRONLY | O_CREAT | O_APPEND);
++  if (!file) {
++    if (Serial) Serial.printf("[%lu] [%s] Failed to open file for appending: %s\n", millis(), moduleName, path);
++    return false;
++  }
++  return true;
++}
++
++bool SDCardManager::openFileForAppend(const char* moduleName, const std::string& path, FsFile& file) {
++  return openFileForAppend(moduleName, path.c_str(), file);
++}
++
++bool SDCardManager::openFileForAppend(const char* moduleName, const String& path, FsFile& file) {
++  return openFileForAppend(moduleName, path.c_str(), file);
++}
++
+ uint64_t SDCardManager::sdTotalBytes() const { return cachedTotalBytes; }
+
+ uint64_t SDCardManager::sdUsedBytes() {
